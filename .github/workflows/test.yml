@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+      
 permissions:
   contents: write
 
@@ -50,7 +51,7 @@ jobs:
           grep -F 'distributionSha256Sum=0b00b0ffe07c4d4789c12d4935a44a7057d55774b7540bd4a3f76f336deb177a' gradle/wrapper/gradle-wrapper.properties
 
       - name: Commit refreshed Gradle Wrapper
-        if: github.event_name == 'push' && github.ref == 'refs/heads/v1.3'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
