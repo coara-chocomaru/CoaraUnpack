@@ -1,0 +1,128 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle 9.9.0
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.9.0'
+          validate-wrappers: false
+
+      - name: Regenerate Gradle Wrapper
+        run: |
+          set -euo pipefail
+          gradle --version | grep -F 'Gradle 9.9.0'
+          gradle --no-daemon --stacktrace :wrapper \
+            --gradle-version=9.9.0 \
+            --distribution-type=bin \
+            --gradle-distribution-sha256-sum=0b00b0ffe07c4d4789c12d4935a44a7057d55774b7540bd4a3f76f336deb177a
+          gradle --no-daemon --stacktrace :wrapper
+          chmod +x ./gradlew
+
+      - name: Verify Gradle Wrapper
+        run: |
+          set -euo pipefail
+          echo '621008afc4f5d59357fcf06ffa644dd5aade5e091bdc363742710445f73cdaf8  gradle/wrapper/gradle-wrapper.jar' | sha256sum --check
+          grep -F 'distributionUrl=https\://services.gradle.org/distributions/gradle-9.9.0-bin.zip' gradle/wrapper/gradle-wrapper.properties
+          grep -F 'distributionSha256Sum=0b00b0ffe07c4d4789c12d4935a44a7057d55774b7540bd4a3f76f336deb177a' gradle/wrapper/gradle-wrapper.properties
+
+      - name: Commit refreshed Gradle Wrapper
+        if: github.event_name == 'push' && github.ref == 'refs/heads/v1.3'
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties
+          if git diff --cached --quiet; then
+            echo 'Gradle Wrapper is already up to date.'
+          else
+            git commit -m 'chore: refresh Gradle 9.9.0 wrapper [skip ci]'
+            if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo '::warning::Wrapper files were regenerated for this build, but GitHub did not allow the commit to be pushed. Check branch protection and Actions write permissions.'
+            fi
+          fi
+
+      - name: Set variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_NAME="$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle | head -n 1)"
+          if [[ -z "$VERSION_NAME" ]]; then
+            echo 'Could not read versionName from app/build.gradle' >&2
+            exit 1
+          fi
+          COMMIT="${GITHUB_SHA::7}"
+          REPO="${GITHUB_REPOSITORY##*/}"
+          TIMESTAMP="$(TZ='Asia/Tokyo' date +'%Y%m%d%H%M%S')"
+          ARTIFACT_NAME="${REPO}-v${VERSION_NAME}-${COMMIT}-${TIMESTAMP}"
+          {
+            printf 'VERSION_NAME=%s\n' "$VERSION_NAME"
+            printf 'COMMIT=%s\n' "$COMMIT"
+            printf 'REPO=%s\n' "$REPO"
+            printf 'TIMESTAMP=%s\n' "$TIMESTAMP"
+            printf 'ARTIFACT_NAME=%s\n' "$ARTIFACT_NAME"
+          } >> "$GITHUB_ENV"
+
+      - name: Show set variables
+        run: |
+          echo "version=v${VERSION_NAME}"
+          echo "commit=${COMMIT}"
+          echo "repo=${REPO}"
+          echo "timestamp=${TIMESTAMP}"
+          echo "name=${ARTIFACT_NAME}"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon --stacktrace --warning-mode=all assembleRelease
+          mv -vf app/build/outputs/apk/release/app-release.apk "${ARTIFACT_NAME}.apk"
+          ./gradlew --no-daemon --stacktrace --warning-mode=all bundleRelease
+          mv -vf app/build/outputs/bundle/release/app-release.aab "${ARTIFACT_NAME}.aab"
+
+      - name: Build APKS
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --retry-delay 2 \
+            --output bundletool.jar \
+            https://github.com/google/bundletool/releases/download/1.18.1/bundletool-all-1.18.1.jar
+          java -jar bundletool.jar build-apks \
+            --bundle="${ARTIFACT_NAME}.aab" \
+            --output="${ARTIFACT_NAME}.apks" \
+            --ks=app/test.jks \
+            --ks-pass=pass:test1234 \
+            --ks-key-alias=key0 \
+            --key-pass=pass:test1234
+          rm -f bundletool.jar
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ env.ARTIFACT_NAME }}"
+          path: |
+            ${{ env.ARTIFACT_NAME }}.apk
+            ${{ env.ARTIFACT_NAME }}.aab
+            ${{ env.ARTIFACT_NAME }}.apks
