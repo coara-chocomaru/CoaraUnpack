@@ -1,0 +1,112 @@
+plugins {
+    id 'com.android.application'
+}
+android {
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
+    namespace = 'com.coara.unpack'
+
+    defaultConfig {
+        applicationId = 'com.coara.unpack'
+        minSdk = 28
+        targetSdk = 33
+        versionCode = 8
+        versionName = "1.3.0"
+
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+
+        proguardFiles(
+            getDefaultProguardFile('proguard-android-optimize.txt'),
+            'proguard-rules.pro'
+        )
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+
+    externalNativeBuild {
+        ndkBuild {
+            path = file('src/main/jni/Android.mk')
+        }
+    }
+    
+    signingConfigs {
+        release {
+            def releaseKeystorePath = System.getenv('RELEASE_KEYSTORE_PATH')
+
+            if (releaseKeystorePath) {
+                storeFile file(releaseKeystorePath)
+                storePassword System.getenv('RELEASE_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('RELEASE_KEY_ALIAS')
+                keyPassword System.getenv('RELEASE_KEY_PASSWORD')
+            } else {
+                storeFile file('test.jks')
+                storePassword 'test1234'
+                keyAlias 'key0'
+                keyPassword 'test1234'
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig = signingConfigs.debug
+        }
+
+        release {
+            minifyEnabled = true
+            shrinkResources = true
+            debuggable = false
+            signingConfig = signingConfigs.release
+        }
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+    
+    packaging {
+        resources {
+            excludes += [
+                'kotlin/**',
+                'kotlin-tooling-metadata.json',
+                'DebugProbesKt.bin',
+                'META-INF/*.version',
+                'META-INF/*.kotlin_module',
+                'META-INF/com/android/build/gradle/app-metadata.properties',
+                'META-INF/**/LICENSE*',
+                'META-INF/**/NOTICE*',
+                'META-INF/DEPENDENCIES',
+                '**/*.kotlin_builtins',
+                '**/*.kotlin_metadata'
+            ]
+        }
+    }
+    
+    lint {
+        disable += [
+            'ExpiredTargetSdkVersion',
+            'NewApi',
+            'Range',
+            'SetTextI18n',
+            'ScopedStorage',
+            'FieldCanBeLocal',
+            'GradleDependency'
+        ]
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += [
+        "-Xlint:deprecation",
+        "-Xlint:unchecked"
+    ]
+}

@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Coara Unpack</string>
+    <string name="app_tagline">imgをぱかっと開いて、ぎゅっと戻すよ〜</string>
+
+    <string name="menu_unpack">imgをアンパック</string>
+    <string name="menu_unpack_desc">boot / vendor_boot / init_boot などを選んで展開するよ</string>
+    <string name="menu_repack">imgをリパック</string>
+    <string name="menu_repack_desc">アンパックしたフォルダからimgを作り直すよ</string>
+    <string name="menu_rd_unpack">ramdiskを展開</string>
+    <string name="menu_rd_unpack_desc">cpio / gz / lz4 / lzma / xz / bz2 を丸ごと展開するよ</string>
+    <string name="menu_rd_repack">ramdiskをリパック</string>
+    <string name="menu_rd_repack_desc">展開したフォルダを好きな形式で固め直すよ</string>
+
+    <string name="status_idle">のんびり待機中だよ〜</string>
+    <string name="status_idle_text">やりたいことを下から選んでね</string>
+    <string name="status_running">がんばってるよ〜</string>
+    <string name="status_done">できたよ〜</string>
+    <string name="status_canceled">やめたよ</string>
+    <string name="status_error">うまくいかなかったよ…</string>
+    <string name="run_unpack">imgをアンパック中…</string>
+    <string name="run_repack">imgをリパック中…</string>
+    <string name="run_rd_unpack">ramdiskを展開中…</string>
+    <string name="run_rd_repack">ramdiskをリパック中…</string>
+    <string name="busy">いま作業中だから、ちょっと待ってね</string>
+    <string name="cancel">やめる</string>
+    <string name="log_title">ログ(長押しで選択・コピーできるよ)</string>
+    <string name="log_copy">ぜんぶコピー</string>
+    <string name="log_clear">クリア</string>
+    <string name="log_copied">ログをコピーしたよ〜</string>
+    <string name="log_empty">コピーするログはまだ無いよ</string>
+    <string name="path_copied">パスをコピーしたよ〜</string>
+    <string name="prev_crash">前回アプリが止まっちゃったみたい。ごめんね…</string>
+    <string name="worker_lost">作業プロセスが止まっちゃったよ。途中の出力は片付けたから、もう一回やってみてね</string>
+    <string name="err_start_service">作業を始められなかったよ…</string>
+    <string name="err_no_saf">システムのファイル選択画面が開けなかったよ</string>
+
+    <string name="perm_title">ストレージの許可がほしいな</string>
+    <string name="perm_message">imgを読んだり、Downloadフォルダに結果を書いたりするのに、ストレージへのアクセス許可が必要だよ。</string>
+    <string name="perm_ok">許可する</string>
+    <string name="perm_cancel">やめとく</string>
+    <string name="perm_denied">許可がないから、今回はキャンセルしたよ</string>
+
+    <string name="pick_file">ファイルを選んでね</string>
+    <string name="pick_img">imgファイルを選んでね</string>
+    <string name="pick_ramdisk">ramdiskファイルを選んでね</string>
+    <string name="pick_unpack_dir">アンパックしたフォルダを選んでね</string>
+    <string name="pick_rd_dir">ramdiskを展開したフォルダを選んでね</string>
+    <string name="pick_this_folder">このフォルダにする</string>
+    <string name="pick_this_folder_ng">ここは対象のフォルダじゃないみたい</string>
+    <string name="err_not_unpack_dir">info.txtが見つからない(または種類が違う)フォルダだよ</string>
+    <string name="err_cannot_read_dir">このフォルダは読めなかったよ</string>
+    <string name="unpack_folder_tag">アンパック済み (%s)</string>
+    <string name="sc_download">Download</string>
+    <string name="sc_internal">内部ストレージ</string>
+    <string name="sc_sdcard">SD</string>
+    <string name="browser_up">ひとつ上へ</string>
+    <string name="browser_loading">読み込み中だよ〜</string>
+    <string name="browser_empty">ここには何もないよ〜</string>
+    <string name="browser_show_all">すべてのファイルを表示</string>
+    <string name="browser_saf">システムの選択画面で選ぶ</string>
+    <string name="browser_cancel">もどる</string>
+
+    <string name="go">やってみる</string>
+    <string name="back">もどる</string>
+    <string name="opt_title_unpack">アンパックのオプション</string>
+    <string name="opt_title_repack">リパックのオプション</string>
+    <string name="opt_title_rd_repack">ramdiskリパックのオプション</string>
+    <string name="opt_extract_rd">ramdiskも中身まで全部展開する</string>
+    <string name="opt_skip_decomp">圧縮を解かずにそのまま取り出す</string>
+    <string name="opt_note_unpack">元のimgはフォルダ内にoriginal.imgとして保管するよ。info.txtだけでリパックできるよ。</string>
+    <string name="opt_note_avb1_key">AVB1署名付きの場合、作業フォルダ内の testkey.pk8（秘密鍵）と testkey.x509.pem（証明書）を使用します。両方無ければ自動生成します。testkey.* が無く他の鍵ペアが1組だけなら自動検出します。testkey.* 以外の鍵を既存鍵と併用する場合は avb1-key.properties で指定できます。鍵の差し替えは次回のリパックから反映されます。</string>
+    <string name="opt_rd_fmt">ramdiskの圧縮形式</string>
+    <string name="opt_k_fmt">kernelの圧縮形式</string>
+    <string name="opt_pad">元のサイズまでパディングする</string>
+    <string name="opt_force">変更がなくても作り直す</string>
+    <string name="opt_nocomp">圧縮せずファイルをそのまま入れる</string>
+    <string name="opt_0777">全ファイルの権限を0777にする</string>
+</resources>
