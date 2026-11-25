@@ -37,7 +37,7 @@ struct Flags {
 
 struct VrEntry {
     std::string name;
-    uint32_t type = 0, size = 0, offset = 0;
+    uint32_t type = 0, size = 0, offset = 0, declared = 0;
     uint32_t boardId[16] = {0};
     Fmt fmt = F_UNKNOWN;
     std::string file;
@@ -242,6 +242,18 @@ bool parseImageAt(BootImg& b, const uint8_t* addr0, Fmt type) {
                 View r = rf.sub(v.offset, v.size);
                 v.fmt = probeFmt(r);
                 b.vr.push_back(v);
+            }
+            for (size_t i = 0; i < b.vr.size(); i++) {
+                VrEntry& v = b.vr[i];
+                uint64_t end = (uint64_t)v.offset + v.size;
+                uint64_t limit = rf.n;
+                for (const VrEntry& o : b.vr) if (o.offset > v.offset && o.offset < limit) limit = o.offset;
+                if (v.offset < limit && end < limit) {
+                    v.declared = v.size;
+                    v.size = (uint32_t)(limit - v.offset);
+                    v.fmt = probeFmt(rf.sub(v.offset, v.size));
+                    logf("! vendor ramdisk[%zu] のtableのsizeが実データより小さいよ(%u → %u)。実データに合わせるね", i, v.declared, v.size);
+                }
             }
         } else {
             b.rfmt = probeFmt(rf);
@@ -882,6 +894,7 @@ void bootUnpack(const std::string& imgPath, const std::string& outDir, const Boo
                 for (int k = 0; k < 16; k++) bid += fmtstr("%08x", v.boardId[k]);
                 w.kv(pf + ".board_id", bid);
                 w.kvu(pf + ".offset", v.offset);
+                if (v.declared) w.kvu(pf + ".table_size_declared", v.declared);
                 blobInfo(w, pf, r, v.fmt, v.file, joinPath(outDir, v.file), dec);
                 decodeStatus(w, pf, dec, note);
                 analyzeCpio(w, pf, joinPath(outDir, v.file));
