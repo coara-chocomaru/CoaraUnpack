@@ -55,83 +55,99 @@ void cpioParse(View in, CpioArchive& out) {
     bool first = true;
     struct HL { size_t idx; };
     std::map<std::tuple<uint32_t, uint32_t, uint32_t>, std::vector<size_t>> links;
-    while (pos < n) {
-        while (pos < n && b[pos] == 0) pos++;
-        if (pos >= n) break;
-        if (pos + 6 > n) break;
-        bool newc = memcmp(b + pos, "070701", 6) == 0 || memcmp(b + pos, "070702", 6) == 0;
-        bool odc = memcmp(b + pos, "070707", 6) == 0;
-        if (!newc && !odc) {
-            if (first) throw Error("cpioじゃないみたい(マジックが違うよ)");
+    try {
+        while (pos < n) {
+            while (pos < n && b[pos] == 0) pos++;
+            if (pos >= n) break;
+            if (pos + 6 > n) break;
+            bool newc = memcmp(b + pos, "070701", 6) == 0 || memcmp(b + pos, "070702", 6) == 0;
+            bool odc = memcmp(b + pos, "070707", 6) == 0;
+            if (!newc && !odc) {
+                if (first) throw Error("cpioじゃないみたい(マジックが違うよ)");
 
-            size_t k = pos + 1;
-            bool found = false;
-            while (k + 6 <= n) {
-                if (memcmp(b + k, "07070", 5) == 0 && (b[k + 5] == '1' || b[k + 5] == '2' || b[k + 5] == '7')) { found = true; break; }
-                k++;
+                size_t k = pos + 1;
+                bool found = false;
+                while (k + 6 <= n) {
+                    if (memcmp(b + k, "07070", 5) == 0 && (b[k + 5] == '1' || b[k + 5] == '2' || b[k + 5] == '7')) { found = true; break; }
+                    k++;
+                }
+                if (!found) break;
+                pos = k;
+                continue;
             }
-            if (!found) break;
-            pos = k;
-            continue;
-        }
-        if (first) {
-            out.format = std::string((const char*)b + pos, 6);
-            first = false;
-        }
-        archive++;
-        out.archives = archive;
-        bool trailer = false;
-        while (pos + 6 <= n && !trailer) {
-            newc = memcmp(b + pos, "070701", 6) == 0 || memcmp(b + pos, "070702", 6) == 0;
-            odc = memcmp(b + pos, "070707", 6) == 0;
-            if (!newc && !odc) break;
-            CpioEntry e;
-            e.archive = archive;
-            uint32_t namesz = 0, filesz = 0, mode = 0;
-            size_t hdr;
-            if (newc) {
-                hdr = 110;
-                if (pos + hdr > n) throw Error("cpioが途中で切れてるよ");
-                const uint8_t* h = b + pos + 6;
-                uint32_t v[13];
-                for (int i = 0; i < 13; i++)
-                    if (!hex8(h + i * 8, v[i])) throw Error("cpioのヘッダが壊れてるよ");
-                e.ino = v[0]; mode = v[1]; e.uid = v[2]; e.gid = v[3]; e.nlink = v[4]; e.mtime = v[5];
-                filesz = v[6]; e.devmaj = v[7]; e.devmin = v[8]; e.rdevmaj = v[9]; e.rdevmin = v[10]; namesz = v[11];
-            } else {
-                hdr = 76;
-                if (pos + hdr > n) throw Error("cpioが途中で切れてるよ");
-                const uint8_t* h = b + pos + 6;
-                uint32_t dev, ino, rdev, mt0, mt1, ns, fs0, fs1;
-                uint32_t uid, gid, nl;
-                if (!oct(h, 6, dev) || !oct(h + 6, 6, ino) || !oct(h + 12, 6, mode) || !oct(h + 18, 6, uid) ||
-                    !oct(h + 24, 6, gid) || !oct(h + 30, 6, nl) || !oct(h + 36, 6, rdev) || !oct(h + 42, 6, mt0) ||
-                    !oct(h + 48, 5, mt1) || !oct(h + 53, 6, ns) || !oct(h + 59, 6, fs0) || !oct(h + 65, 5, fs1))
-                    throw Error("cpioのヘッダが壊れてるよ");
-                (void)mt0; (void)mt1; (void)fs1;
-                e.mtime = 0;
-                e.ino = ino; e.uid = uid; e.gid = gid; e.nlink = nl; e.devmaj = dev; e.rdevmaj = rdev >> 8; e.rdevmin = rdev & 0xff;
-                namesz = ns;
-                filesz = fs0;
+            if (first) {
+                out.format = std::string((const char*)b + pos, 6);
+                first = false;
             }
-            e.mode = mode;
-            size_t np = pos + hdr;
-            if (namesz == 0 || namesz > 65536 || np + namesz > n) throw Error("cpioのファイル名が壊れてるよ");
-            std::string name((const char*)b + np, strnlen((const char*)b + np, namesz));
-            size_t dp = newc ? ((np + namesz + 3) & ~(size_t)3) : np + namesz;
-            if (name == "TRAILER!!!") {
-                pos = dp;
-                trailer = true;
-                break;
+            archive++;
+            out.archives = archive;
+            bool trailer = false;
+            while (pos + 6 <= n && !trailer) {
+                newc = memcmp(b + pos, "070701", 6) == 0 || memcmp(b + pos, "070702", 6) == 0;
+                odc = memcmp(b + pos, "070707", 6) == 0;
+                if (!newc && !odc) break;
+                CpioEntry e;
+                e.archive = archive;
+                uint32_t namesz = 0, filesz = 0, mode = 0;
+                size_t hdr;
+                if (newc) {
+                    hdr = 110;
+                    if (pos + hdr > n) throw Error("cpioが途中で切れてるよ");
+                    const uint8_t* h = b + pos + 6;
+                    uint32_t v[13];
+                    for (int i = 0; i < 13; i++)
+                        if (!hex8(h + i * 8, v[i])) throw Error("cpioのヘッダが壊れてるよ");
+                    e.ino = v[0]; mode = v[1]; e.uid = v[2]; e.gid = v[3]; e.nlink = v[4]; e.mtime = v[5];
+                    filesz = v[6]; e.devmaj = v[7]; e.devmin = v[8]; e.rdevmaj = v[9]; e.rdevmin = v[10]; namesz = v[11];
+                } else {
+                    hdr = 76;
+                    if (pos + hdr > n) throw Error("cpioが途中で切れてるよ");
+                    const uint8_t* h = b + pos + 6;
+                    uint32_t dev, ino, rdev, mt0, mt1, ns, fs0, fs1;
+                    uint32_t uid, gid, nl;
+                    if (!oct(h, 6, dev) || !oct(h + 6, 6, ino) || !oct(h + 12, 6, mode) || !oct(h + 18, 6, uid) ||
+                        !oct(h + 24, 6, gid) || !oct(h + 30, 6, nl) || !oct(h + 36, 6, rdev) || !oct(h + 42, 6, mt0) ||
+                        !oct(h + 48, 5, mt1) || !oct(h + 53, 6, ns) || !oct(h + 59, 6, fs0) || !oct(h + 65, 5, fs1))
+                        throw Error("cpioのヘッダが壊れてるよ");
+                    (void)mt0; (void)mt1; (void)fs1;
+                    e.mtime = 0;
+                    e.ino = ino; e.uid = uid; e.gid = gid; e.nlink = nl; e.devmaj = dev; e.rdevmaj = rdev >> 8; e.rdevmin = rdev & 0xff;
+                    namesz = ns;
+                    filesz = fs0;
+                }
+                e.mode = mode;
+                size_t np = pos + hdr;
+                if (namesz == 0 || namesz > 65536 || np + namesz > n) throw Error("cpioのファイル名が壊れてるよ");
+                std::string name((const char*)b + np, strnlen((const char*)b + np, namesz));
+                size_t dp = newc ? ((np + namesz + 3) & ~(size_t)3) : np + namesz;
+                if (name == "TRAILER!!!") {
+                    pos = dp;
+                    trailer = true;
+                    break;
+                }
+                if (dp > n) throw Error(fmtstr("cpioが途中で切れてるよ(%s)", name.c_str()));
+                if (filesz > n - dp) {
+                    e.data = View(b + dp, n - dp);
+                    e.path = name;
+                    e.truncated = true;
+                    out.entries.push_back(e);
+                    out.truncated = true;
+                    out.error = fmtstr("cpioが途中で切れてるよ(%s)", name.c_str());
+                    pos = n;
+                    break;
+                }
+                e.data = View(b + dp, filesz);
+                e.path = name;
+                pos = newc ? ((dp + filesz + 3) & ~(size_t)3) : dp + filesz;
+                if (name == "." || name == "..") continue;
+                out.entries.push_back(e);
             }
-            if (dp > n || filesz > n - dp) throw Error(fmtstr("cpioが途中で切れてるよ(%s)", name.c_str()));
-            e.data = View(b + dp, filesz);
-            e.path = name;
-            pos = newc ? ((dp + filesz + 3) & ~(size_t)3) : dp + filesz;
-            if (name == "." || name == "..") continue;
-            out.entries.push_back(e);
+            if (!trailer) break;
         }
-        if (!trailer) break;
+    } catch (const Error& ex) {
+        if (out.entries.empty()) throw;
+        out.truncated = true;
+        out.error = ex.what();
     }
     if (first) throw Error("cpioのエントリが見つからないよ");
 

@@ -36,7 +36,9 @@ Fmt checkFmtLg(const uint8_t* p, size_t n) {
         while (off + 4 <= n) {
             uint32_t bs = rd32(p + off);
             off += 4;
-            if (off + bs > n) return F_LZ4_LG;
+            if (bs == 0) continue;
+            if (off == n) return F_LZ4_LG;
+            if (bs > n - off) return f;
             off += bs;
         }
     }
@@ -107,14 +109,17 @@ void ramdiskUnpack(const std::string& inFile, const std::string& outDir) {
     MappedFile cm;
     View cv = v;
     bool compressed = fmtCompressed(f);
+    bool decPartial = false;
+    std::string decNote;
     if (f == F_LZOP) throw Error("lzop形式は未対応だよ〜ごめんね");
     if (compressed) {
         logf("形式: %s だね。展開するよ〜", fmtName(f));
         {
             FileSink fs(tmp);
             ProgressScope ps(2, 20);
-            decompress(f, v, fs);
+            decPartial = !decompressLenient(f, v, fs, decNote);
             fs.close();
+            if (decPartial) logf("! %s。読めたところまで展開したよ", decNote.c_str());
         }
         cm.open(tmp);
         cv = cm.view();
@@ -125,6 +130,7 @@ void ramdiskUnpack(const std::string& inFile, const std::string& outDir) {
     CpioArchive ar;
     cpioParse(cv, ar);
     logf("cpioを読んだよ: %zu エントリ", ar.entries.size());
+    if (ar.truncated) logf("! %s。読めたところまでを扱うよ", ar.error.c_str());
     Digests cd = digestAll(cv.p, cv.n);
 
     std::map<std::string, size_t> last;
@@ -278,6 +284,10 @@ void ramdiskUnpack(const std::string& inFile, const std::string& outDir) {
     for (auto& kv : pr.detail) w.kv("source_codec." + kv.first, kv.second);
     w.kvb("mtk_header", !mtk.empty());
     if (!mtk.empty()) w.kv("mtk_header_hex", hex(mtk.data(), mtk.size()));
+    w.kvb("source_decode_partial", decPartial);
+    w.kv("source_decode_note", decNote);
+    w.kvb("cpio_truncated", ar.truncated);
+    w.kv("cpio_error", ar.error);
     w.kv("cpio_format", ar.format);
     w.kvu("cpio_archives", (uint64_t)ar.archives);
     w.kvu("cpio_size", cv.n);

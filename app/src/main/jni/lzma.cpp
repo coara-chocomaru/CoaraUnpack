@@ -282,52 +282,57 @@ size_t lzma2Decode(const uint8_t* in, size_t inLen, uint32_t dictSize, Sink& out
     size_t pos = 0;
     bool needDict = true, needProps = true;
     int lc = 3, lp = 0, pb = 2;
-    while (true) {
-        if (pos >= inLen) throw Error("LZMA2のデータが途中で切れてるよ");
-        uint8_t ctl = in[pos++];
-        if (ctl == 0) break;
-        if (ctl < 0x80) {
-            if (ctl > 2) throw Error("LZMA2のデータが壊れてるよ");
-            if (pos + 2 > inLen) throw Error("LZMA2のデータが途中で切れてるよ");
-            size_t sz = (((size_t)in[pos] << 8) | in[pos + 1]) + 1;
-            pos += 2;
-            if (ctl == 1) {
+    try {
+        while (true) {
+            if (pos >= inLen) throw Error("LZMA2のデータが途中で切れてるよ");
+            uint8_t ctl = in[pos++];
+            if (ctl == 0) break;
+            if (ctl < 0x80) {
+                if (ctl > 2) throw Error("LZMA2のデータが壊れてるよ");
+                if (pos + 2 > inLen) throw Error("LZMA2のデータが途中で切れてるよ");
+                size_t sz = (((size_t)in[pos] << 8) | in[pos + 1]) + 1;
+                pos += 2;
+                if (ctl == 1) {
+                    dec.dictReset();
+                    needDict = false;
+                } else if (needDict) {
+                    throw Error("LZMA2のデータが壊れてるよ(dict)");
+                }
+                if (pos + sz > inLen) throw Error("LZMA2のデータが途中で切れてるよ");
+                dec.uncompressed(in + pos, sz);
+                pos += sz;
+                continue;
+            }
+            if (pos + 4 > inLen) throw Error("LZMA2のデータが途中で切れてるよ");
+            size_t usz = ((((size_t)ctl & 0x1F) << 16) | ((size_t)in[pos] << 8) | in[pos + 1]) + 1;
+            size_t csz = (((size_t)in[pos + 2] << 8) | in[pos + 3]) + 1;
+            pos += 4;
+            int mode = (ctl >> 5) & 3;
+            if (mode == 3) {
                 dec.dictReset();
                 needDict = false;
             } else if (needDict) {
                 throw Error("LZMA2のデータが壊れてるよ(dict)");
             }
-            if (pos + sz > inLen) throw Error("LZMA2のデータが途中で切れてるよ");
-            dec.uncompressed(in + pos, sz);
-            pos += sz;
-            continue;
+            if (mode >= 2) {
+                if (pos >= inLen) throw Error("LZMA2のデータが途中で切れてるよ");
+                parseLcLpPb(in[pos++], lc, lp, pb);
+                if (lc + lp > 4) throw Error("LZMA2のpropsが変だよ");
+                dec.setProps(lc, lp, pb);
+                needProps = false;
+            } else if (needProps) {
+                throw Error("LZMA2のデータが壊れてるよ(props)");
+            } else if (mode == 1) {
+                dec.resetState();
+            }
+            if (pos + csz > inLen) throw Error("LZMA2のデータが途中で切れてるよ");
+            dec.decode(in + pos, csz, usz, false);
+            pos += csz;
+            checkCancel();
         }
-        if (pos + 4 > inLen) throw Error("LZMA2のデータが途中で切れてるよ");
-        size_t usz = ((((size_t)ctl & 0x1F) << 16) | ((size_t)in[pos] << 8) | in[pos + 1]) + 1;
-        size_t csz = (((size_t)in[pos + 2] << 8) | in[pos + 3]) + 1;
-        pos += 4;
-        int mode = (ctl >> 5) & 3;
-        if (mode == 3) {
-            dec.dictReset();
-            needDict = false;
-        } else if (needDict) {
-            throw Error("LZMA2のデータが壊れてるよ(dict)");
-        }
-        if (mode >= 2) {
-            if (pos >= inLen) throw Error("LZMA2のデータが途中で切れてるよ");
-            parseLcLpPb(in[pos++], lc, lp, pb);
-            if (lc + lp > 4) throw Error("LZMA2のpropsが変だよ");
-            dec.setProps(lc, lp, pb);
-            needProps = false;
-        } else if (needProps) {
-            throw Error("LZMA2のデータが壊れてるよ(props)");
-        } else if (mode == 1) {
-            dec.resetState();
-        }
-        if (pos + csz > inLen) throw Error("LZMA2のデータが途中で切れてるよ");
-        dec.decode(in + pos, csz, usz, false);
-        pos += csz;
-        checkCancel();
+    } catch (const Error&) {
+        dec.flush();
+        throw;
     }
     dec.flush();
     if (outTotal) *outTotal = dec.processed();
@@ -493,7 +498,12 @@ void lzmaDecompressAlone(View in, Sink& out) {
     if (dict > (1u << 30)) dict = 1u << 30;
     LzmaDec dec(dict, out);
     dec.setProps(lc, lp, pb);
-    dec.decode(in.p + 13, in.size() - 13, unknown ? 0 : usize, unknown);
+    try {
+        dec.decode(in.p + 13, in.size() - 13, unknown ? 0 : usize, unknown);
+    } catch (const Error&) {
+        dec.flush();
+        throw;
+    }
     dec.flush();
 }
 
@@ -504,8 +514,11 @@ void xzDecompress(View in, Sink& out) {
     size_t pos = 0;
     int streams = 0;
     while (pos + 12 <= n && memcmp(b + pos, MAGIC, 6) == 0) {
+        if (crc32(b + pos + 6, 2) != rd32(b + pos + 8)) {
+            if (streams) break;
+            throw Error("XZのヘッダCRCが合わないよ");
+        }
         streams++;
-        if (crc32(b + pos + 6, 2) != rd32(b + pos + 8)) throw Error("XZのヘッダCRCが合わないよ");
         int checkId = b[pos + 7] & 0x0F;
         static const int checkSize[16] = {0, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64};
         size_t csz = checkSize[checkId];
@@ -543,6 +556,7 @@ void xzDecompress(View in, Sink& out) {
             if (flags & 0x80) { if (usize < dsz) dsz = std::max<uint64_t>(usize, 4096); }
             pos += hsz;
             bool plain = nf == 1;
+            bool cut = false;
             size_t used;
             if (plain) {
                 uint64_t tot = 0;
@@ -555,8 +569,8 @@ void xzDecompress(View in, Sink& out) {
                 pos += used;
                 size_t pad = (4 - ((pos - bstart) & 3)) & 3;
                 pos += pad;
-                if (pos + csz > n) throw Error("XZが途中で切れてるよ");
-                if (checkId == 1 && chk.crc != rd32(b + pos))
+                cut = pos + csz > n;
+                if (!cut && checkId == 1 && chk.crc != rd32(b + pos))
                     logf("! XZのCRC32が合わなかったよ(続けるね)");
             } else {
                 VecSink vs;
@@ -566,7 +580,7 @@ void xzDecompress(View in, Sink& out) {
                 pos += used;
                 size_t pad = (4 - ((pos - bstart) & 3)) & 3;
                 pos += pad;
-                if (pos + csz > n) throw Error("XZが途中で切れてるよ");
+                cut = pos + csz > n;
                 for (int i = nf - 2; i >= 0; i--) {
                     Filt& f = filts[i];
                     uint8_t* d = vs.v.data();
@@ -584,21 +598,31 @@ void xzDecompress(View in, Sink& out) {
                 }
                 out.write(vs.v.data(), vs.v.size());
             }
+            if (cut) {
+                logf("! XZの末尾(check/index/footer)が欠けてたよ。本体は展開できたよ");
+                return;
+            }
             pos += csz;
             checkCancel();
         }
 
         size_t ip = pos + 1;
-        uint64_t nrec;
-        if (!readVli(b, n, ip, nrec)) throw Error("XZのindexが壊れてるよ");
-        for (uint64_t i = 0; i < nrec; i++) {
+        uint64_t nrec = 0;
+        bool idxOk = pos < n && readVli(b, n, ip, nrec);
+        for (uint64_t i = 0; idxOk && i < nrec; i++) {
             uint64_t a, c;
-            if (!readVli(b, n, ip, a) || !readVli(b, n, ip, c)) throw Error("XZのindexが壊れてるよ");
+            if (!readVli(b, n, ip, a) || !readVli(b, n, ip, c)) idxOk = false;
         }
-        ip = (ip + 3) & ~(size_t)3;
-        ip += 4;
-        ip += 12;
-        if (ip > n) throw Error("XZが途中で切れてるよ");
+        if (idxOk) {
+            ip = (ip + 3) & ~(size_t)3;
+            ip += 4;
+            ip += 12;
+            if (ip > n) idxOk = false;
+        }
+        if (!idxOk) {
+            logf("! XZの末尾(index/footer)が欠けてたよ。本体は展開できたよ");
+            break;
+        }
         pos = ip;
         while (pos + 4 <= n && rd32(b + pos) == 0) pos += 4;
     }

@@ -49,7 +49,10 @@ void bzip2Decompress(View in, Sink& out) {
     while (base + 4 <= in.size() && in.p[base] == 'B' && in.p[base + 1] == 'Z' && in.p[base + 2] == 'h') {
         streams++;
         int level = in.p[base + 3] - '0';
-        if (level < 1 || level > 9) throw Error("bzip2のヘッダが変だよ");
+        if (level < 1 || level > 9) {
+            if (streams > 1) break;
+            throw Error("bzip2のヘッダが変だよ");
+        }
         size_t blockMax = (size_t)level * 100000;
         BitReader br(in.p + base + 4, in.size() - base - 4);
         std::vector<uint32_t> tt(blockMax);

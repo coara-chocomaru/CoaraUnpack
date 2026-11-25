@@ -11,6 +11,7 @@ struct CpioEntry {
     std::string target;
     int archive = 0;
     bool skipped = false;
+    bool truncated = false;
     int linkGroup = -1;
     bool linkPrimary = true;
 };
@@ -19,6 +20,8 @@ struct CpioArchive {
     std::vector<CpioEntry> entries;
     std::string format = "070701";
     int archives = 0;
+    bool truncated = false;
+    std::string error;
 };
 
 void cpioParse(View in, CpioArchive& out);

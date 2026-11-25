@@ -31,6 +31,7 @@ bool fmtCompressed(Fmt f);
 bool fmtCompressedAny(Fmt f);
 
 void decompress(Fmt f, View in, Sink& out);
+bool decompressLenient(Fmt f, View in, Sink& out, std::string& note);
 void compress(Fmt f, View in, Sink& out);
 
 void gzipCompress(View in, Sink& out);

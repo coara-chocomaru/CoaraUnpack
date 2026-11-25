@@ -9,43 +9,58 @@ static const size_t LZ4_LEGACY_BLOCK = 8u << 20;
 
 size_t lz4CompressBound(size_t n) { return n + n / 255 + 16; }
 
-void lz4BlockDecompress(const uint8_t* in, size_t inLen, uint8_t* out, size_t outCap, size_t& outLen) {
-
+static const char* lz4BlockCore(const uint8_t* in, size_t inLen, uint8_t* out, size_t outCap, size_t histLen, size_t& outLen) {
     size_t ip = 0, op = 0;
+    outLen = 0;
     while (true) {
-        if (ip >= inLen) throw Error("LZ4のデータが途中で切れてるよ");
+        if (ip >= inLen) return "LZ4のデータが途中で切れてるよ";
         uint8_t token = in[ip++];
         size_t lit = token >> 4;
         if (lit == 15) {
             uint8_t s;
             do {
-                if (ip >= inLen) throw Error("LZ4のデータが途中で切れてるよ");
+                if (ip >= inLen) {
+                    outLen = op;
+                    return "LZ4のデータが途中で切れてるよ";
+                }
                 s = in[ip++];
                 lit += s;
             } while (s == 255);
         }
-        if (lit > inLen - ip || lit > outCap - op) throw Error("LZ4のデータが壊れてるよ(literal)");
+        if (lit > inLen - ip) {
+            size_t part = std::min(inLen - ip, outCap - op);
+            memcpy(out + op, in + ip, part);
+            outLen = op + part;
+            return "LZ4のデータが途中で切れてるよ";
+        }
+        if (lit > outCap - op) {
+            size_t part = outCap - op;
+            memcpy(out + op, in + ip, part);
+            outLen = op + part;
+            return "LZ4のデータが壊れてるよ(literal)";
+        }
         memcpy(out + op, in + ip, lit);
         ip += lit;
         op += lit;
-        if (ip >= inLen) break;
-        if (ip + 2 > inLen) throw Error("LZ4のデータが途中で切れてるよ");
+        outLen = op;
+        if (ip >= inLen) return nullptr;
+        if (ip + 2 > inLen) return "LZ4のデータが途中で切れてるよ";
         size_t off = in[ip] | (in[ip + 1] << 8);
         ip += 2;
-        if (off == 0) throw Error("LZ4のデータが壊れてるよ(offset)");
+        if (off == 0) return "LZ4のデータが壊れてるよ(offset)";
         size_t ml = token & 15;
         if (ml == 15) {
             uint8_t s;
             do {
-                if (ip >= inLen) throw Error("LZ4のデータが途中で切れてるよ");
+                if (ip >= inLen) return "LZ4のデータが途中で切れてるよ";
                 s = in[ip++];
                 ml += s;
             } while (s == 255);
         }
         ml += 4;
-        if (ml > outCap - op) throw Error("LZ4のデータが壊れてるよ(長さ)");
+        if (off > op + histLen) return "LZ4のデータが壊れてるよ(距離)";
+        if (ml > outCap - op) return "LZ4のデータが壊れてるよ(長さ)";
         const uint8_t* src = out + op - off;
-        if (off > op) throw Error("LZ4のデータが壊れてるよ(距離)");
         uint8_t* dst = out + op;
         if (off >= ml) {
             memcpy(dst, src, ml);
@@ -53,8 +68,13 @@ void lz4BlockDecompress(const uint8_t* in, size_t inLen, uint8_t* out, size_t ou
             for (size_t i = 0; i < ml; i++) dst[i] = src[i];
         }
         op += ml;
+        outLen = op;
     }
-    outLen = op;
+}
+
+void lz4BlockDecompress(const uint8_t* in, size_t inLen, uint8_t* out, size_t outCap, size_t& outLen) {
+    const char* err = lz4BlockCore(in, inLen, out, outCap, 0, outLen);
+    if (err) throw Error(err);
 }
 
 namespace {
@@ -221,38 +241,61 @@ size_t lz4BlockCompress(const uint8_t* in, size_t inLen, uint8_t* out, size_t ou
     return e.run();
 }
 
+static bool legacyMagic(uint32_t v) { return v == LZ4_LEGACY_MAGIC || v == 0x184C2103u; }
+
 static void legacyDecode(View in, Sink& out) {
     const uint8_t* b = in.p;
     size_t n = in.size();
     size_t pos = 0;
     std::unique_ptr<uint8_t[]> obuf(new uint8_t[LZ4_LEGACY_BLOCK + 64]);
     size_t maxComp = lz4CompressBound(LZ4_LEGACY_BLOCK);
+    size_t blocks = 0;
     while (pos + 4 <= n) {
         uint32_t v = rd32(b + pos);
         pos += 4;
-        if (v == LZ4_LEGACY_MAGIC) continue;
-        if (v > maxComp) break;
-        if (v > n - pos) throw Error("LZ4(legacy)が途中で切れてるよ");
+        if (legacyMagic(v)) continue;
+        if (v == 0) continue;
+        if (pos == n) break;
+        if (v > maxComp) {
+            if (blocks == 0) throw Error("LZ4(legacy)のブロックサイズが変だよ");
+            break;
+        }
+        size_t avail = std::min<size_t>(v, n - pos);
         size_t olen = 0;
-        lz4BlockDecompress(b + pos, v, obuf.get(), LZ4_LEGACY_BLOCK, olen);
-        out.write(obuf.get(), olen);
+        const char* err = lz4BlockCore(b + pos, avail, obuf.get(), LZ4_LEGACY_BLOCK, 0, olen);
+        if (olen) out.write(obuf.get(), olen);
+        if (err) throw Error(err);
+        if (v > n - pos) throw Error("LZ4(legacy)が途中で切れてるよ");
+        blocks++;
         pos += v;
         checkCancel();
     }
+    if (blocks == 0) throw Error("LZ4(legacy)のブロックが見つからないよ");
 }
 
 static void frameDecode(View in, Sink& out) {
     const uint8_t* b = in.p;
     size_t n = in.size();
     size_t pos = 0;
+    int frames = 0;
     while (pos + 4 <= n) {
         uint32_t magic = rd32(b + pos);
         if ((magic & 0xFFFFFFF0u) == 0x184D2A50u) {
-            if (pos + 8 > n) throw Error("LZ4が途中で切れてるよ");
-            pos += 8 + rd32(b + pos + 4);
+            if (pos + 8 > n) break;
+            uint64_t skip = (uint64_t)rd32(b + pos + 4);
+            if (pos + 8 + skip > n) break;
+            pos += 8 + (size_t)skip;
             continue;
         }
-        if (magic != LZ4_FRAME_MAGIC) break;
+        if (legacyMagic(magic) && frames == 0) {
+            legacyDecode(View(b + pos, n - pos), out);
+            return;
+        }
+        if (magic != LZ4_FRAME_MAGIC) {
+            if (frames == 0) throw Error("LZ4フレームのマジックが違うよ");
+            break;
+        }
+        frames++;
         pos += 4;
         if (pos + 2 > n) throw Error("LZ4が途中で切れてるよ");
         uint8_t flg = b[pos], bd = b[pos + 1];
@@ -266,67 +309,34 @@ static void frameDecode(View in, Sink& out) {
         pos += hlen + 1;
         std::unique_ptr<uint8_t[]> win(new uint8_t[maxBlock + 65536 + 64]);
         size_t hist = 0;
-        Bytes whole;
-        (void)whole;
+        bool ended = false;
         while (true) {
-            if (pos + 4 > n) throw Error("LZ4が途中で切れてるよ");
+            if (pos + 4 > n) break;
             uint32_t bs = rd32(b + pos);
             pos += 4;
-            if (bs == 0) break;
+            if (bs == 0) {
+                ended = true;
+                break;
+            }
             bool raw = bs & 0x80000000u;
             bs &= 0x7FFFFFFFu;
-            if (bs > n - pos) throw Error("LZ4が途中で切れてるよ");
-            size_t olen;
+            bool cut = bs > n - pos;
+            size_t avail = cut ? n - pos : bs;
+            size_t olen = 0;
             uint8_t* dst = win.get() + hist;
+            const char* err = nullptr;
             if (raw) {
                 if (bs > maxBlock) throw Error("LZ4のブロックが大きすぎるよ");
-                memcpy(dst, b + pos, bs);
-                olen = bs;
+                memcpy(dst, b + pos, avail);
+                olen = avail;
             } else {
-
-                size_t ip = 0, op = 0;
-                const uint8_t* src = b + pos;
-                while (true) {
-                    if (ip >= bs) throw Error("LZ4のデータが途中で切れてるよ");
-                    uint8_t token = src[ip++];
-                    size_t lit = token >> 4;
-                    if (lit == 15) {
-                        uint8_t s;
-                        do {
-                            if (ip >= bs) throw Error("LZ4のデータが途中で切れてるよ");
-                            s = src[ip++];
-                            lit += s;
-                        } while (s == 255);
-                    }
-                    if (lit > bs - ip || lit > maxBlock - op) throw Error("LZ4のデータが壊れてるよ");
-                    memcpy(dst + op, src + ip, lit);
-                    ip += lit;
-                    op += lit;
-                    if (ip >= bs) break;
-                    if (ip + 2 > bs) throw Error("LZ4のデータが途中で切れてるよ");
-                    size_t off = src[ip] | (src[ip + 1] << 8);
-                    ip += 2;
-                    if (off == 0 || off > op + hist) throw Error("LZ4のデータが壊れてるよ(offset)");
-                    size_t ml = token & 15;
-                    if (ml == 15) {
-                        uint8_t s;
-                        do {
-                            if (ip >= bs) throw Error("LZ4のデータが途中で切れてるよ");
-                            s = src[ip++];
-                            ml += s;
-                        } while (s == 255);
-                    }
-                    ml += 4;
-                    if (ml > maxBlock - op) throw Error("LZ4のデータが壊れてるよ(長さ)");
-                    const uint8_t* mp = dst + op - off;
-                    for (size_t i = 0; i < ml; i++) dst[op + i] = mp[i];
-                    op += ml;
-                }
-                olen = op;
+                err = lz4BlockCore(b + pos, avail, dst, maxBlock, hist, olen);
             }
+            if (olen) out.write(dst, olen);
+            if (err) throw Error(err);
+            if (cut) throw Error("LZ4が途中で切れてるよ");
             pos += bs;
             if (bchk) pos += 4;
-            out.write(dst, olen);
             if (!indep) {
                 size_t total = hist + olen;
                 if (total > 65536) {
@@ -340,8 +350,10 @@ static void frameDecode(View in, Sink& out) {
             }
             checkCancel();
         }
+        if (!ended) throw Error("LZ4が途中で切れてるよ");
         if (cchk) pos += 4;
     }
+    if (frames == 0) throw Error("LZ4フレームが見つからないよ");
 }
 
 void lz4Decompress(Fmt f, View in, Sink& out) {

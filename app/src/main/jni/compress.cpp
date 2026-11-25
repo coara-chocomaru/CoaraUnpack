@@ -147,17 +147,21 @@ void gzipDecompress(View in, Sink& out) {
         zs.next_in = const_cast<uint8_t*>(p + pos);
         zs.avail_in = (uInt)std::min<size_t>(n - pos, 0x7FFFFFFF);
         int ret;
+        size_t memberOut = 0;
         do {
             zs.next_out = obuf.get();
             zs.avail_out = 1 << 18;
             ret = inflate(&zs, Z_NO_FLUSH);
-            if (ret != Z_OK && ret != Z_STREAM_END) {
-                if (ret == Z_BUF_ERROR && members) goto done;
-                throw Error(fmtstr("gzipの展開に失敗したよ(%d)", ret));
-            }
             size_t got = (1 << 18) - zs.avail_out;
             if (got) out.write(obuf.get(), got);
+            memberOut += got;
             checkCancel();
+            if (ret != Z_OK && ret != Z_STREAM_END) {
+                if (ret == Z_BUF_ERROR && zs.avail_in == 0 && got == 0 && members) goto done;
+                if (members && memberOut == 0) goto done;
+                if (ret == Z_BUF_ERROR && zs.avail_in == 0) throw Error("gzipが途中で切れてるよ");
+                throw Error(fmtstr("gzipの展開に失敗したよ(%d)", ret));
+            }
             if (ret == Z_OK && zs.avail_in == 0 && zs.avail_out != 0) {
                 throw Error("gzipが途中で切れてるよ");
             }
@@ -209,6 +213,20 @@ void gzipCompress(View in, Sink& out) {
     }
     if (ok && b.v.size() < a.v.size()) out.write(b.v.data(), b.v.size());
     else out.write(a.v.data(), a.v.size());
+}
+
+bool decompressLenient(Fmt f, View in, Sink& out, std::string& note) {
+    uint64_t before = out.total();
+    try {
+        decompress(f, in, out);
+    } catch (const Canceled&) {
+        throw;
+    } catch (const Error& e) {
+        if (out.total() == before) throw;
+        note = e.what();
+        return false;
+    }
+    return true;
 }
 
 void decompress(Fmt f, View in, Sink& out) {

@@ -64,6 +64,7 @@ struct BootImg {
     bool kDetMtk = false, kDetZimage = false;
     Fmt kDetFmt = F_UNKNOWN;
     bool kRawMtkConsistent = false;
+    bool truncated = false;
     View blk(size_t off, size_t len) const { return map.view().sub(off, len); }
 };
 
@@ -141,11 +142,22 @@ bool parseImageAt(BootImg& b, const uint8_t* addr0, Fmt type) {
     size_t mapEnd = (size_t)alignUp(b.map.size(), 4096);
     size_t off = b.hdr.hdrSpace();
     bool bad = false;
+    bool cutSeen = false;
+    bool firstFit = false;
+    bool anyBlock = false;
     auto block = [&](size_t& dst, uint64_t sz) {
         dst = b.headerOff + off;
         off += (size_t)sz;
         off = (size_t)alignUp(off, b.hdr.pageSize());
-        if (b.headerOff + off > mapEnd) bad = true;
+        if (!sz) return;
+        if (b.headerOff + off <= mapEnd) {
+            if (!anyBlock) firstFit = true;
+        } else if (dst < b.map.size() || firstFit) {
+            cutSeen = true;
+        } else {
+            bad = true;
+        }
+        anyBlock = true;
     };
     block(b.offKernel, b.hdr.kernelSize());
     block(b.offRamdisk, b.hdr.ramdiskSize());
@@ -161,6 +173,11 @@ bool parseImageAt(BootImg& b, const uint8_t* addr0, Fmt type) {
         return false;
     }
     b.payloadEnd = b.headerOff + off;
+    if (cutSeen) {
+        b.truncated = true;
+        b.payloadEnd = std::min(b.payloadEnd, b.map.size());
+        logf("イメージが途中で切れてるみたい(ヘッダのサイズより短いよ)。読める分だけ扱うね");
+    }
     b.tail = b.map.size() > b.payloadEnd ? b.blk(b.payloadEnd, b.map.size() - b.payloadEnd) : View();
 
     if (uint32_t ks = b.hdr.kernelSize()) {
@@ -382,6 +399,36 @@ struct Emitted {
     bool wrote = false;
 };
 
+struct AddrKey {
+    const char* addr;
+    const char* off;
+};
+
+const AddrKey kAddrKeys[] = {{"kernel_addr", "kernel_offset"}, {"ramdisk_addr", "ramdisk_offset"}, {"second_addr", "second_offset"},
+                             {"tags_addr", "tags_offset"}, {"dtb_addr", "dtb_offset"}};
+
+uint64_t pickLoadBase(const Hdr& h) {
+    const uint64_t kGran = 0xF0000000ull;
+    uint64_t base = 0;
+    bool set = false;
+    if (h.has("kernel_addr") && h.get("kernel_addr") != 0 && h.get("kernel_addr") <= 0xFFFFFFFFull) {
+        base = h.get("kernel_addr") & kGran;
+        set = true;
+    }
+    for (const AddrKey& a : kAddrKeys) {
+        if (!h.has(a.addr)) continue;
+        uint64_t v = h.get(a.addr);
+        if (v == 0 || v > 0xFFFFFFFFull) continue;
+        if (!set) {
+            base = v & kGran;
+            set = true;
+        } else if (v < base) {
+            base = v & kGran;
+        }
+    }
+    return base;
+}
+
 void blobInfo(InfoWriter& w, const std::string& pfx, View stored, Fmt fmt, const std::string& file, const std::string& path,
               bool decompressed) {
     Digests ds = digestAll(stored.p, stored.n);
@@ -415,17 +462,35 @@ void blobInfo(InfoWriter& w, const std::string& pfx, View stored, Fmt fmt, const
     }
 }
 
-void writeBlob(const std::string& path, View stored, Fmt fmt, bool skipDecomp, bool& decompressed, int lo = -1, int hi = -1) {
+void writeBlob(const std::string& path, View stored, Fmt fmt, bool skipDecomp, bool& decompressed, int lo = -1, int hi = -1,
+               bool salvage = false, std::string* note = nullptr) {
     decompressed = false;
     if (!skipDecomp && fmtCompressed(fmt)) {
         FileSink fs(path);
         try {
-            if (lo >= 0) {
+            std::string n;
+            bool ok = true;
+            if (salvage) {
+                if (lo >= 0) {
+                    ProgressScope ps(lo, hi);
+                    ok = decompressLenient(fmt, stored, fs, n);
+                } else {
+                    ok = decompressLenient(fmt, stored, fs, n);
+                }
+            } else if (lo >= 0) {
                 ProgressScope ps(lo, hi);
                 decompress(fmt, stored, fs);
             } else {
                 decompress(fmt, stored, fs);
             }
+            if (!ok && note) *note = n;
+        } catch (const Error& e) {
+            fs.close();
+            unlink(path.c_str());
+            if (!salvage) throw;
+            writeFile(path, stored.p, stored.n);
+            if (note) *note = e.what();
+            return;
         } catch (...) {
             fs.close();
             unlink(path.c_str());
@@ -436,6 +501,13 @@ void writeBlob(const std::string& path, View stored, Fmt fmt, bool skipDecomp, b
     } else {
         writeFile(path, stored.p, stored.n);
     }
+}
+
+void decodeStatus(InfoWriter& w, const std::string& pfx, bool decompressed, const std::string& note) {
+    if (note.empty()) return;
+    w.kv(pfx + ".decode_status", decompressed ? "partial" : "failed_kept_stored");
+    w.kv(pfx + ".decode_note", note);
+    logf("! %s: %s (%s)", pfx.c_str(), note.c_str(), decompressed ? "読めたところまで取り出したよ" : "展開できなかったから元のバイト列のまま取り出したよ");
 }
 
 void analyzeKernel(InfoWriter& w, const std::string& kpath, const std::string& outDir, bool zimage) {
@@ -616,6 +688,7 @@ void bootUnpack(const std::string& imgPath, const std::string& outDir, const Boo
     w.kvu("image.preheader_size", b.headerOff);
     w.kvu("image.payload_end", b.payloadEnd);
     w.kvu("image.tail_offset", b.payloadEnd);
+    w.kvb("image.truncated", b.truncated);
     w.kvu("image.tail_size", b.tail.n);
     w.kvb("flag.mtk_kernel", b.f.mtkK);
     w.kvb("flag.mtk_ramdisk", b.f.mtkR);
@@ -638,8 +711,17 @@ void bootUnpack(const std::string& imgPath, const std::string& outDir, const Boo
     w.kv("hdr.magic", h.magic());
     w.kvu("hdr.header_version", h.headerVersion());
     w.kvu("hdr.page_size", h.pageSize());
-    static const char* numKeys[] = {"kernel_addr", "ramdisk_addr", "second_addr", "tags_addr", "dtb_addr", "unknown",
-                                    "recovery_dtbo_offset", "header_size"};
+    {
+        uint64_t base = pickLoadBase(h);
+        w.kvx("hdr.kernel_base", base);
+        for (const AddrKey& a : kAddrKeys) {
+            if (!h.has(a.addr)) continue;
+            uint64_t v = h.get(a.addr);
+            if (v != 0 && v >= base) w.kvx(std::string("hdr.") + a.off, v - base);
+            else w.kvx(std::string("hdr.") + a.addr, v);
+        }
+    }
+    static const char* numKeys[] = {"unknown", "recovery_dtbo_offset", "header_size"};
     for (const char* k : numKeys) if (h.has(k)) w.kvx(std::string("hdr.") + k, h.get(k));
     static const char* sizeKeys[] = {"kernel_size", "ramdisk_size", "second_size", "extra_size", "recovery_dtbo_size", "dtb_size",
                                      "signature_size", "vendor_ramdisk_table_size", "vendor_ramdisk_table_entry_num",
@@ -791,7 +873,8 @@ void bootUnpack(const std::string& imgPath, const std::string& outDir, const Boo
                 v.file = "vendor_ramdisk/" + fn;
                 View r = b.rField.sub(v.offset, v.size);
                 bool dec = false;
-                writeBlob(joinPath(outDir, v.file), r, v.fmt, o.skipDecomp, dec, 40 + (int)(18 * i / b.vr.size()), 40 + (int)(18 * (i + 1) / b.vr.size()));
+                std::string note;
+                writeBlob(joinPath(outDir, v.file), r, v.fmt, o.skipDecomp, dec, 40 + (int)(18 * i / b.vr.size()), 40 + (int)(18 * (i + 1) / b.vr.size()), true, &note);
                 w.kv(pf + ".name", v.name);
                 w.kvu(pf + ".type", v.type);
                 w.kv(pf + ".type_name", typeName(v.type));
@@ -800,6 +883,7 @@ void bootUnpack(const std::string& imgPath, const std::string& outDir, const Boo
                 w.kv(pf + ".board_id", bid);
                 w.kvu(pf + ".offset", v.offset);
                 blobInfo(w, pf, r, v.fmt, v.file, joinPath(outDir, v.file), dec);
+                decodeStatus(w, pf, dec, note);
                 analyzeCpio(w, pf, joinPath(outDir, v.file));
                 logf("vendor ramdisk[%zu] %s を取り出したよ", i, v.name.c_str());
             }
@@ -812,8 +896,10 @@ void bootUnpack(const std::string& imgPath, const std::string& outDir, const Boo
             std::string rp = joinPath(outDir, "ramdisk.cpio");
             bool dec = false;
             logf("ramdiskを取り出すよ (%s)", fmtName(b.rfmt));
-            writeBlob(rp, b.rBody, b.rfmt, o.skipDecomp, dec, 40, 58);
+            std::string note;
+            writeBlob(rp, b.rBody, b.rfmt, o.skipDecomp, dec, 40, 58, true, &note);
             blobInfo(w, "ramdisk", b.rBody, b.rfmt, "ramdisk.cpio", rp, dec);
+            decodeStatus(w, "ramdisk", dec, note);
             analyzeCpio(w, "ramdisk", rp);
         }
     }
@@ -1041,6 +1127,16 @@ void bootRepack(const std::string& dir, const std::string& outFile, const BootRe
             if (!same) hdr.set("os_version", osVersionPack(base, info.has("hdr.os_version") ? &v : nullptr, info.has("hdr.os_patch_level") ? &p : nullptr));
         } else if (info.has("hdr.os_version_raw")) {
             hdr.set("os_version", info.getu("hdr.os_version_raw"));
+        }
+    }
+    {
+        uint64_t base = info.getu("hdr.kernel_base", 0);
+        for (const AddrKey& a : kAddrKeys) {
+            std::string ok = std::string("hdr.") + a.off;
+            if (!hdr.has(a.addr) || !info.has(ok)) continue;
+            uint64_t v = base + info.getu(ok);
+            if (strcmp(a.addr, "dtb_addr") != 0 && v > 0xFFFFFFFFull) throw Error(fmtstr("%sが32bitを超えたよ(kernel_base + %s)", a.addr, a.off));
+            hdr.set(a.addr, v);
         }
     }
     if (hdr.hasName() && info.has("hdr.name") && info.get("hdr.name") != hdr.name()) hdr.setName(info.get("hdr.name"));
